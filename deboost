@@ -1,0 +1,496 @@
+#!/usr/bin/env bash
+# Deboost - Modular post-install for Debian 13 GNOME/Wayland
+# Project: https://github.com/lucasbt/deboost
+# License: MIT License - https://raw.githubusercontent.com/lucasbt/deboost/refs/heads/main/LICENSE
+# Maintainer: Lucas Bittencourt (lucasbt@gmail.com)
+
+set -euo pipefail
+
+# ============================================================================
+# CONFIGURATION AND GLOBAL VARIABLES
+# ============================================================================
+
+readonly DEBOOST_VERSION="1.0.0"
+readonly DEBOOST_GIT_URL="https://github.com/lucasbt/deboost"
+readonly DEBOOST_GIT_RAW="https://raw.githubusercontent.com/lucasbt/deboost/main"
+
+# Installation paths
+DEBOOST_HOME="${HOME}/.local/share/deboost"
+DEBOOST_BIN="${HOME}/.local/bin"
+DEBOOST_MODULES="${DEBOOST_HOME}/modules"
+DEBOOST_CONFIG="${DEBOOST_HOME}/config"
+DEBOOST_ENV_FILE="${DEBOOST_CONFIG}/env"
+DEBOOST_INSTALLED_FILE="${DEBOOST_HOME}/.installed"
+
+# Operation mode
+DRYRUN=false
+VERBOSE=false
+
+# Import utils early
+source "${DEBOOST_HOME}/lib/utils.sh"
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+warn_if_not_wayland() {
+  if ! is_wayland; then
+    log_warn "This configuration is optimized for Wayland."
+    log_warn "Current session: '${XDG_SESSION_TYPE:-unknown}'"
+  fi
+}
+
+# ============================================================================
+# INSTALLATION AND BOOTSTRAP FUNCTIONS
+# ============================================================================
+
+bootstrap() {
+  log_info "Starting Deboost bootstrap..."
+  
+  require_command "git"
+  require_command "curl"
+  
+  if [ -d "${DEBOOST_HOME}" ]; then
+    log_warn "Deboost is already installed at ${DEBOOST_HOME}"
+    read -rp "Do you want to reinstall? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[yY]$ ]]; then
+      log_info "Installation cancelled."
+      exit 0
+    fi
+    run "rm -rf '${DEBOOST_HOME}'"
+  fi
+  
+  log_info "Cloning repository..."
+  run "git clone '${DEBOOST_GIT_URL}' '${DEBOOST_HOME}'"
+  
+  log_info "Creating directory structure..."
+  run "mkdir -p '${DEBOOST_BIN}'"
+  run "mkdir -p '${DEBOOST_MODULES}'"
+  run "mkdir -p '${DEBOOST_CONFIG}'"
+  
+  log_info "Installing main executable..."
+  run "ln -sf '${DEBOOST_HOME}/deboost' '${DEBOOST_BIN}/deboost'"
+  run "chmod +x '${DEBOOST_BIN}/deboost'"
+  
+  # Create default environment file
+  if [ ! -f "${DEBOOST_ENV_FILE}" ]; then
+    create_default_env
+  fi
+  
+  # Mark as installed
+  echo "$(date +'%Y-%m-%d %H:%M:%S')" > "${DEBOOST_INSTALLED_FILE}"
+  echo "${DEBOOST_VERSION}" >> "${DEBOOST_INSTALLED_FILE}"
+  
+  log_success "Deboost installed successfully!"
+  log_info "Run 'deboost --help' to see available commands"
+  log_info "Add ~/.local/bin to your PATH if not already there:"
+  log_info "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
+}
+
+create_default_env() {
+  log_debug "Creating default environment file..."
+  
+  cat > "${DEBOOST_ENV_FILE}" <<'ENV_EOF'
+# Deboost - Environment Configuration File
+# This file is loaded before module execution
+
+# ============================================================================
+# GENERAL SETTINGS
+# ============================================================================
+
+# Dry-run mode (true/false)
+DEBOOST_DRYRUN=false
+
+# Verbose mode (true/false)
+DEBOOST_VERBOSE=false
+
+# ============================================================================
+# DRIVERS AND HARDWARE
+# ============================================================================
+
+# LIBVA driver for Intel (i965 for Haswell and earlier)
+LIBVA_DRIVER_NAME=i965
+
+# ============================================================================
+# GNOME / WAYLAND
+# ============================================================================
+
+# Color scheme (prefer-dark/prefer-light)
+GNOME_COLOR_SCHEME=prefer-dark
+
+# Enable animations (true/false)
+GNOME_ENABLE_ANIMATIONS=false
+
+# Text scaling factor (1.0 = 100%)
+GNOME_TEXT_SCALING=1.05
+
+# Night Light temperature (1000-4000, recommended: 3700)
+GNOME_NIGHT_LIGHT_TEMP=3700
+
+# Cursor size
+GNOME_CURSOR_SIZE=24
+
+# ============================================================================
+# FONTS
+# ============================================================================
+
+# Default monospace font
+FONT_MONOSPACE="JetBrains Mono 11"
+
+# Font hinting (none/slight/medium/full)
+FONT_HINTING=slight
+
+# Antialiasing (none/grayscale/rgba)
+FONT_ANTIALIASING=rgba
+
+# ============================================================================
+# DEVELOPMENT
+# ============================================================================
+
+# Java version to install via asdf
+ASDF_JAVA_VERSION=temurin-25
+
+# Node.js version to install via asdf
+ASDF_NODEJS_VERSION=lts
+
+# Python version to install via asdf
+ASDF_PYTHON_VERSION=3.12.0
+
+# Go version to install via asdf
+ASDF_GOLANG_VERSION=1.21.0
+
+# ============================================================================
+# PACKAGES AND REPOSITORIES
+# ============================================================================
+
+# Enable contrib and non-free repositories
+ENABLE_NONFREE_REPOS=true
+
+# Install proprietary firmware
+INSTALL_PROPRIETARY_FIRMWARE=true
+
+# ============================================================================
+# MODULES
+# ============================================================================
+
+# List of modules to execute (space-separated)
+# Leave empty to run all available modules
+DEBOOST_MODULES=""
+
+# Modules to ignore (space-separated)
+DEBOOST_MODULES_IGNORE=""
+
+ENV_EOF
+
+  log_success "Configuration file created: ${DEBOOST_ENV_FILE}"
+}
+
+load_env() {
+  if [ -f "${DEBOOST_ENV_FILE}" ]; then
+    log_debug "Loading configuration from ${DEBOOST_ENV_FILE}"
+    # shellcheck disable=SC1090
+    source "${DEBOOST_ENV_FILE}"
+    
+    # Override with file variables
+    DRYRUN="${DEBOOST_DRYRUN:-$DRYRUN}"
+    VERBOSE="${DEBOOST_VERBOSE:-$VERBOSE}"
+  else
+    log_warn "Configuration file not found: ${DEBOOST_ENV_FILE}"
+  fi
+}
+
+# ============================================================================
+# MODULE MANAGEMENT
+# ============================================================================
+
+list_modules() {
+  log_info "Available modules:"
+  
+  if [ ! -d "${DEBOOST_MODULES}" ]; then
+    log_error "Modules directory not found: ${DEBOOST_MODULES}"
+    return 1
+  fi
+  
+  local count=0
+  for module in "${DEBOOST_MODULES}"/*.sh; do
+    if [ -f "$module" ]; then
+      local name
+      name=$(basename "$module" .sh)
+      local desc=""
+      
+      # Try to extract module description
+      if grep -q "^# DESC:" "$module"; then
+        desc=$(grep "^# DESC:" "$module" | head -n1 | sed 's/^# DESC: *//')
+      fi
+      
+      printf "  %-20s %s\n" "$name" "$desc"
+      ((count++))
+    fi
+  done
+  
+  if [ $count -eq 0 ]; then
+    log_warn "No modules found."
+  else
+    log_info "Total: $count module(s)"
+  fi
+}
+
+run_module() {
+  local module_name="$1"
+  local module_path="${DEBOOST_MODULES}/${module_name}.sh"
+  
+  if [ ! -f "$module_path" ]; then
+    log_error "Module not found: $module_name"
+    return 1
+  fi
+  
+  log_info "Running module: $module_name"
+  
+  # Export variables for the module
+  export DRYRUN VERBOSE
+  export DEBOOST_HOME DEBOOST_CONFIG
+  
+  # shellcheck disable=SC1090
+  if source "$module_path"; then
+    log_success "Module '$module_name' executed successfully"
+    return 0
+  else
+    log_error "Failed to execute module: $module_name"
+    return 1
+  fi
+}
+
+run_all_modules() {
+  log_info "Running all modules..."
+  
+  local failed=0
+  local success=0
+  
+  for module in "${DEBOOST_MODULES}"/*.sh; do
+    if [ -f "$module" ]; then
+      local name
+      name=$(basename "$module" .sh)
+      
+      # Check if module is in ignore list
+      if [[ " ${DEBOOST_MODULES_IGNORE} " =~ " ${name} " ]]; then
+        log_info "Skipping module: $name"
+        continue
+      fi
+      
+      if run_module "$name"; then
+        ((success++))
+      else
+        ((failed++))
+      fi
+    fi
+  done
+  
+  log_info "Summary: $success success(es), $failed failure(s)"
+  
+  return $failed
+}
+
+# ============================================================================
+# UPDATE AND UNINSTALL
+# ============================================================================
+
+self_update() {
+  log_info "Updating Deboost..."
+  
+  if [ ! -d "${DEBOOST_HOME}/.git" ]; then
+    log_error "Deboost was not installed via git. Use bootstrap to reinstall."
+    return 1
+  fi
+  
+  cd "${DEBOOST_HOME}" || return 1
+  
+  log_info "Fetching updates..."
+  run "git fetch origin"
+  
+  local current_version
+  current_version=$(git rev-parse HEAD)
+  
+  local remote_version
+  remote_version=$(git rev-parse origin/main)
+  
+  if [ "$current_version" = "$remote_version" ]; then
+    log_success "Deboost is already up to date!"
+    return 0
+  fi
+  
+  log_info "New version available. Updating..."
+  run "git pull origin main"
+  
+  log_success "Deboost updated successfully!"
+  log_info "Previous version: ${current_version:0:7}"
+  log_info "Current version: ${remote_version:0:7}"
+}
+
+uninstall() {
+  log_warn "Uninstalling Deboost..."
+  
+  read -rp "Are you sure you want to uninstall Deboost? (y/N): " confirm
+  if [[ ! "$confirm" =~ ^[yY]$ ]]; then
+    log_info "Uninstall cancelled."
+    return 0
+  fi
+  
+  log_info "Removing files..."
+  run "rm -rf '${DEBOOST_HOME}'"
+  run "rm -f '${DEBOOST_BIN}/deboost'"
+  
+  log_success "Deboost uninstalled."
+  log_info "System settings (gsettings, packages) were not removed."
+}
+
+# ============================================================================
+# COMMAND LINE INTERFACE
+# ============================================================================
+
+show_help() {
+  cat <<HELP
+Deboost v${DEBOOST_VERSION} - Modular post-install for Debian 13 GNOME
+
+USAGE:
+  deboost [COMMAND] [OPTIONS]
+
+COMMANDS:
+  bootstrap             Install Deboost for the first time
+  install               Run all installation modules
+  install <module>      Run a specific module
+  list                  List available modules
+  update                Update Deboost to latest version
+  uninstall             Remove Deboost from the system
+  config                Open configuration file for editing
+  help                  Show this help
+
+OPTIONS:
+  --dry-run             Simulate execution without making changes
+  --verbose, -v         Show detailed information
+  --apply               Execute changes (opposite of --dry-run)
+
+EXAMPLES:
+  # Install for the first time
+  curl -fsSL ${DEBOOST_GIT_RAW}/deboost | bash -s -- bootstrap
+
+  # Run all modules
+  deboost install --apply
+
+  # Run specific module
+  deboost install system-update
+
+  # List modules
+  deboost list
+
+  # Update Deboost
+  deboost update
+
+CONFIGURATION:
+  Edit ${DEBOOST_ENV_FILE}
+  to customize Deboost behavior.
+
+PROJECT:
+  ${DEBOOST_GIT_URL}
+
+HELP
+}
+
+show_version() {
+  echo "Deboost v${DEBOOST_VERSION}"
+  
+  if [ -f "${DEBOOST_INSTALLED_FILE}" ]; then
+    echo "Installed on: $(head -n1 "${DEBOOST_INSTALLED_FILE}")"
+  fi
+}
+
+# ============================================================================
+# MAIN FUNCTION
+# ============================================================================
+
+main() {
+  local command="${1:-}"
+  shift || true
+  
+  # Parse global options
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run)
+        DRYRUN=true
+        shift
+        ;;
+      --apply)
+        DRYRUN=false
+        shift
+        ;;
+      --verbose|-v)
+        VERBOSE=true
+        shift
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  
+  # Commands that don't need installation
+  case "$command" in
+    bootstrap)
+      bootstrap
+      exit 0
+      ;;
+    help|--help|-h|"")
+      show_help
+      exit 0
+      ;;
+    version|--version|-V)
+      show_version
+      exit 0
+      ;;
+  esac
+  
+  # Check if it's installed
+  if [ ! -f "${DEBOOST_INSTALLED_FILE}" ]; then
+    log_error "Deboost is not installed."
+    log_info "Run: deboost bootstrap"
+    exit 1
+  fi
+  
+  # Load environment
+  load_env
+  warn_if_not_wayland
+  
+  # Execute command
+  case "$command" in
+    install)
+      if [ $# -gt 0 ]; then
+        run_module "$1"
+      else
+        run_all_modules
+      fi
+      ;;
+    list)
+      list_modules
+      ;;
+    update|self-update)
+      self_update
+      ;;
+    uninstall)
+      uninstall
+      ;;
+    config)
+      ${EDITOR:-nano} "${DEBOOST_ENV_FILE}"
+      ;;
+    *)
+      log_error "Unknown command: $command"
+      log_info "Run 'deboost help' to see available commands"
+      exit 1
+      ;;
+  esac
+}
+
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
+
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  main "$@"
+fi
