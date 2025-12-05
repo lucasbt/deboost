@@ -6,9 +6,10 @@
 set -euo pipefail
 
 source "${DEBOOST_HOME}/lib/utils.sh" 2>/dev/null || {
-  run() { echo "[RUN] $*"; eval "$@"; }
   log_info() { echo "[INFO] $*"; }
   log_success() { echo "[OK] $*"; }
+  log_warn() { echo "[WARN] $*"; }
+  log_error() { echo "[ERROR] $*"; }
 }
 
 # Lista de aplicativos Flatpak para instalação
@@ -37,70 +38,285 @@ DEV_PACKAGES=(
   "clang"
   "htop"
   "iotop"
-  "python3-pip"
-  "python3-virtualenv"
-  "python3-wheel"
-  "python3-setuptools"
   "perl"
   "lua"
 )
 
-install_mise() {
-  log_info "Installing mise..."
-
-  if command -v mise >/dev/null 2>&1; then
-    log_info "mise already installed. Updating..."
-    run "mise self-update"
+install_sdkman() {
+  log_info "Installing SDKMAN!..."
+  
+  if [ -d "${HOME}/.sdkman" ]; then
+    log_info "SDKMAN! already installed. Updating..."
+    # shellcheck disable=SC1091
+    source "${HOME}/.sdkman/bin/sdkman-init.sh" 2>/dev/null || true
+    run "sdk selfupdate force" || true
   else
-    run "curl https://mise.jdx.dev/install.sh | sh"
+    if ! check_internet; then
+      log_warn "No internet connection. Skipping SDKMAN!."
+      return 1
+    fi
+    
+    log_info "→ Downloading and installing SDKMAN!..."
+    run "curl -s 'https://get.sdkman.io' | bash"
   fi
-
+  
   # Configure shell
   local shell_config="${HOME}/.bashrc"
+  
+  if ! grep -q 'sdkman-init.sh' "$shell_config" 2>/dev/null; then
+    log_info "Adding SDKMAN! to $shell_config"
+    run "bash -c 'cat >> \"$shell_config\" <<'\''EOF'\''
 
-  if ! grep -q 'mise activate' "$shell_config" 2>/dev/null; then
-    log_info "Adding mise to $shell_config"
-    cat >> "$shell_config" <<'EOF'
-
-# mise version manager
-eval "$(mise activate bash)"
-EOF
+# SDKMAN!
+export SDKMAN_DIR=\"\$HOME/.sdkman\"
+[[ -s \"\$HOME/.sdkman/bin/sdkman-init.sh\" ]] && source \"\$HOME/.sdkman/bin/sdkman-init.sh\"
+EOF'"
   fi
-
-  # Load mise for current session
-  eval "$(mise activate bash)"
+  
+  # Load SDKMAN! in current session
+  if [ -f "${HOME}/.sdkman/bin/sdkman-init.sh" ]; then
+    # shellcheck disable=SC1091
+    source "${HOME}/.sdkman/bin/sdkman-init.sh"
+  fi
+  
+  log_success "SDKMAN! installed!"
 }
 
-install_mise_tools() {
-  log_info "Installing tools with mise..."
+# Install JDKS
+install_sdkman_jdks() {
+    log_info "Installing SDKMAN JDKs..."
 
-  # Java
-  if [ -n "${MISE_JAVA_VERSION:-}" ]; then
-    log_info "Installing Java ${MISE_JAVA_VERSION}..."
-    run "mise install java@${MISE_JAVA_VERSION}"
-    run "mise use --global java@${MISE_JAVA_VERSION}"
-  fi
+    source "$HOME/.sdkman/bin/sdkman-init.sh"
 
-  # Node.js
-  if [ -n "${MISE_NODE_VERSION:-}" ]; then
-    log_info "Installing Node.js ${MISE_NODE_VERSION}..."
-    run "mise install node@${MISE_NODE_VERSION}"
-    run "mise use --global node@${MISE_NODE_VERSION}"
-  fi
+    if [ ! -f "${HOME}/.sdkman/bin/sdkman-init.sh" ]; then
+      log_warn "SDKMAN! not installed. Skipping Java install."
+      return 1
+    fi
 
-  # Python
-  if [ -n "${MISE_PYTHON_VERSION:-}" ]; then
-    log_info "Installing Python ${MISE_PYTHON_VERSION}..."
-    run "mise install python@${MISE_PYTHON_VERSION}"
-    run "mise use --global python@${MISE_PYTHON_VERSION}"
-  fi
+    # Install Java
+    local jdks=("25.0.1-tem")
+    if [ -n "${SDKMAN_JAVA_VERSION:-}" ]; then
+      log_info "→ Installing Java ${SDKMAN_JAVA_VERSION}..."
+      run "sdk install java ${SDKMAN_JAVA_VERSION}" || true
+      run "sdk default java ${SDKMAN_JAVA_VERSION}" || true
+    else
+      log_info "→ Installing latest Java LTS..."
+      run "sdk install java ${jdks}" || true
+      # Set default JDK
+      run "sdk default java ${jdks}" || log_warning "Failed to set default Java"
+    fi
+  
+    log_success "SDKMAN JDKs installed"
+}
 
-  # Go
-  if [ -n "${MISE_GO_VERSION:-}" ]; then
-    log_info "Installing Go ${MISE_GO_VERSION}..."
-    run "mise install go@${MISE_GO_VERSION}"
-    run "mise use --global go@${MISE_GO_VERSION}"
+install_java_tools() {
+  log_info "Installing Java, Maven, and Gradle via SDKMAN!..."
+  
+  if [ ! -f "${HOME}/.sdkman/bin/sdkman-init.sh" ]; then
+    log_warn "SDKMAN! not installed. Skipping Java tools."
+    return 1
   fi
+  
+  # shellcheck disable=SC1091
+  source "${HOME}/.sdkman/bin/sdkman-init.sh"
+  
+  # Install Maven
+  if [ -n "${SDKMAN_MAVEN_VERSION:-}" ]; then
+    log_info "→ Installing Maven ${SDKMAN_MAVEN_VERSION}..."
+    run "sdk install maven ${SDKMAN_MAVEN_VERSION}" || true
+  else
+    log_info "→ Installing latest Maven..."
+    run "sdk install maven" || true
+  fi
+  
+  # Install Gradle
+  if [ -n "${SDKMAN_GRADLE_VERSION:-}" ]; then
+    log_info "→ Installing Gradle ${SDKMAN_GRADLE_VERSION}..."
+    run "sdk install gradle ${SDKMAN_GRADLE_VERSION}" || true
+  else
+    log_info "→ Installing latest Gradle..."
+    run "sdk install gradle" || true
+  fi
+  
+  log_success "Java tools installed!"
+}
+
+install_nodejs() {
+  log_info "Installing Node.js and npm..."
+  
+  if ! check_internet; then
+    log_warn "No internet connection. Skipping Node.js."
+    return 1
+  fi
+  
+  # Install Node.js using official NodeSource repository
+  log_info "→ Adding NodeSource repository..."
+  
+  local node_version="${NODEJS_VERSION:-24}"
+  
+  run "curl -fsSL https://deb.nodesource.com/setup_${node_version}.x | sudo -E bash -"
+  run "sudo apt -qq update"
+  run "sudo apt install -y nodejs"
+  
+  # Verify npm is installed
+  if command -v npm &>/dev/null; then
+    log_info "→ Updating npm to latest version..."
+    run "sudo npm install -g npm@latest"
+  fi
+  
+  log_success "Node.js and npm installed!"
+  log_info "Node.js version: $(node --version 2>/dev/null || echo 'not available')"
+  log_info "npm version: $(npm --version 2>/dev/null || echo 'not available')"
+}
+
+install_pyenv() {
+  log_info "Installing pyenv..."
+  
+  # Verificar se já está instalado
+  if command -v pyenv >/dev/null 2>&1 || [ -d "${HOME}/.pyenv" ]; then
+    log_info "pyenv already installed. Updating..."
+    
+    if [ -d "${HOME}/.pyenv" ]; then
+      local current_branch
+      current_branch=$(git -C "${HOME}/.pyenv" symbolic-ref --short HEAD 2>/dev/null || echo "master")
+      run "git -C '${HOME}/.pyenv' fetch origin"
+      run "git -C '${HOME}/.pyenv' reset --hard 'origin/${current_branch}'"
+    fi
+    return 0
+  fi
+  
+  # Verificar internet
+  if ! check_internet; then
+    log_warn "No internet connection. Skipping pyenv."
+    return 1
+  fi
+  
+  # Instalar dependências e pyenv
+  log_info "→ Installing dependencies and pyenv..."
+  run "sudo apt install -y make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev curl"
+  
+  log_info "→ Running official installer..."
+  run "curl -fsSL https://pyenv.run | bash"
+  
+  log_success "pyenv installed!"
+}
+
+install_python() {
+  log_info "Installing Python via pyenv..."
+  
+  if ! command -v pyenv &>/dev/null; then
+    log_warn "pyenv not found. Skipping Python installation."
+    return 1
+  fi
+  
+  if [ -n "${PYENV_PYTHON_VERSION:-}" ]; then
+    log_info "→ Installing Python ${PYENV_PYTHON_VERSION}..."
+    run "pyenv install ${PYENV_PYTHON_VERSION}" || true
+    run "pyenv global ${PYENV_PYTHON_VERSION}" || true
+  else
+    log_info "→ Installing latest Python 3..."
+    local latest_python=$(pyenv install --list | grep -E '^\s*3\.[0-9]+\.[0-9]+$' | tail -1 | xargs)
+    if [ -n "$latest_python" ]; then
+      run "pyenv install ${latest_python}" || true
+      run "pyenv global ${latest_python}" || true
+    fi
+  fi
+  
+  log_success "Python installed!"
+}
+
+install_golang() {
+  log_info "Installing Golang..."
+  
+  if ! check_internet; then
+    log_warn "No internet connection. Skipping Go."
+    return 1
+  fi
+  
+  local go_version=""
+  
+  # Check if version is specified in config
+  if [ -n "${GOLANG_VERSION:-}" ]; then
+    go_version="${GOLANG_VERSION}"
+    log_info "→ Using configured Go version: ${go_version}"
+  else
+    # Get latest Go version from official site
+    log_info "→ Fetching latest Go version from official site..."
+    go_version=$(curl -s https://go.dev/VERSION?m=text | head -1 | sed 's/go//')
+    
+    if [ -z "$go_version" ]; then
+      log_error "Could not fetch latest Go version from official site."
+      return 1
+    fi
+    
+    log_info "→ Latest Go version available: ${go_version}"
+  fi
+  
+  # Check if Go is already installed with the same version
+  if command -v go &>/dev/null; then
+    local current_version=$(go version | awk '{print $3}' | sed 's/go//')
+    if [ "$current_version" = "$go_version" ]; then
+      log_info "Go ${go_version} already installed."
+      return 0
+    fi
+    log_info "→ Upgrading from Go ${current_version} to ${go_version}"
+  fi
+  
+  log_info "→ Downloading Go ${go_version}..."
+  local go_tar="/tmp/go${go_version}.linux-amd64.tar.gz"
+  run "curl -fsSL -o '$go_tar' https://go.dev/dl/go${go_version}.linux-amd64.tar.gz"
+  
+  log_info "→ Installing Go..."
+  run "sudo rm -rf /usr/local/go"
+  run "sudo tar -C /usr/local -xzf '$go_tar'"
+  run "rm -f '$go_tar'"
+  
+  # Configure shell
+  local shell_config="${HOME}/.bashrc"
+  
+  if ! grep -q '/usr/local/go/bin' "$shell_config" 2>/dev/null; then
+    log_info "Adding Go to PATH in $shell_config"
+    run "bash -c 'cat >> \"$shell_config\" <<'\''EOF'\''
+
+# Go
+export PATH=\$PATH:/usr/local/go/bin
+export GOPATH=\$HOME/go
+export PATH=\$PATH:\$GOPATH/bin
+EOF'"
+  fi
+  
+  # Add to current session
+  export PATH=$PATH:/usr/local/go/bin
+  export GOPATH=$HOME/go
+  export PATH=$PATH:$GOPATH/bin
+  
+  log_success "Go ${go_version} installed!"
+}
+
+install_rust() {
+  log_info "Installing Rust..."
+  
+  if ! check_internet; then
+    log_warn "No internet connection. Skipping Rust."
+    return 1
+  fi
+  
+  if command -v rustc &>/dev/null; then
+    log_info "Rust already installed. Updating..."
+    run "rustup update stable"
+  else
+    log_info "→ Downloading and installing Rust..."
+    run "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+    
+    # Load cargo env in current session
+    if [ -f "${HOME}/.cargo/env" ]; then
+      # shellcheck disable=SC1091
+      source "${HOME}/.cargo/env"
+    fi
+  fi
+  
+  log_success "Rust installed!"
+  log_info "Rust version: $(rustc --version 2>/dev/null || echo 'not available')"
 }
 
 install_dev_packages() {
@@ -132,7 +348,7 @@ install_docker_engine() {
   run "bash -c 'sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
 Types: deb
 URIs: https://download.docker.com/linux/debian
-Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+Suites: $(. /etc/os-release && echo \"\$VERSION_CODENAME\")
 Components: stable
 Signed-By: /etc/apt/keyrings/docker.asc
 EOF'"
@@ -145,7 +361,7 @@ EOF'"
   run "sudo systemctl enable docker"
   log_info "Verify docker installation..."
   run "sudo docker run hello-world"
-  log_info \"Docker installed. Logout/login to use without sudo.\"
+  log_info "Docker installed. Logout/login to use without sudo."
   log_success "Docker installed!"
 }
 
@@ -209,8 +425,8 @@ install_awscli() {
   run "curl -fsSL -o '$aws_zip' https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
   run "unzip -q '$aws_zip' -d /tmp"
   run "sudo /tmp/aws/install --update"
-  rm -f "$aws_zip"
-  rm -rf /tmp/aws
+  run "rm -f '$aws_zip'"
+  run "rm -rf /tmp/aws"
   
   log_success "AWS CLI installed!"
 }
@@ -228,7 +444,7 @@ install_vscode() {
   log_info "→ Adding Microsoft GPG key..."
   run "wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /tmp/packages.microsoft.gpg"
   run "sudo install -D -o root -g root -m 644 /tmp/packages.microsoft.gpg /etc/apt/keyrings/packages.microsoft.gpg"
-  rm -f /tmp/packages.microsoft.gpg
+  run "rm -f /tmp/packages.microsoft.gpg"
   
   log_info "→ Adding VS Code repository..."
   run "echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main' | sudo tee /etc/apt/sources.list.d/vscode.list"
@@ -278,7 +494,7 @@ install_intellij() {
     # Find the extracted directory name
     idea_dir=$(tar -tzf "$idea_tar" | head -1 | cut -f1 -d"/")
     
-    rm -f "$idea_tar"
+    run "rm -f '$idea_tar'"
   fi
   
   # Create symlink
@@ -288,9 +504,8 @@ install_intellij() {
   log_info "→ Creating desktop entry..."
   local desktop_file="$HOME/.local/share/applications/intellij.desktop"
   
-  if [ "$DRYRUN" = false ]; then
-    mkdir -p "$HOME/.local/share/applications"
-    run "bash -c 'cat > "$desktop_file" <<EOF
+  run "mkdir -p \"$HOME/.local/share/applications\""
+  run "bash -c 'cat > \"$desktop_file\" <<EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
@@ -302,10 +517,7 @@ Categories=Development;IDE;
 Terminal=false
 StartupWMClass=IntelliJ CE
 EOF'"
-    chmod +x "$desktop_file"
-  else
-    echo "[DRYRUN] would create $desktop_file"
-  fi
+  run "chmod +x \"$desktop_file\""
   
   log_success "IntelliJ IDEA installed!"
 }
@@ -328,15 +540,14 @@ install_postman() {
     log_info "→ Downloading Postman..."    
     run "curl -fsSL -o '$postman_tar' https://dl.pstmn.io/download/latest/linux64"
     run "sudo tar -xzf '$postman_tar' -C /opt/"
-    rm -f "$postman_tar"
+    run "rm -f '$postman_tar'"
   fi
   
   # Create symlink
   run "sudo ln -sf /opt/Postman/Postman /usr/local/bin/postman"
   
   # Create desktop entry
-  if [ "$DRYRUN" = false ]; then
-    run "bash -c 'sudo tee /usr/share/applications/postman.desktop > /dev/null <<EOF
+  run "bash -c 'sudo tee /usr/share/applications/postman.desktop > /dev/null <<EOF
 [Desktop Entry]
 Type=Application
 Name=Postman
@@ -345,9 +556,6 @@ Exec=/opt/Postman/Postman
 Comment=API Development Environment
 Categories=Development;
 EOF'"
-  else
-    echo "[DRYRUN] would create /usr/share/applications/postman.desktop"
-  fi
   
   log_success "Postman installed!"
 }
@@ -386,7 +594,7 @@ install_drawio() {
     
     run "sudo dpkg -i '$drawio_deb' || true"
     run "sudo apt -f install -y"
-    rm -f "$drawio_deb"
+    run "rm -f '$drawio_deb'"
   fi
   
   log_success "Draw.io installed!"
@@ -413,7 +621,7 @@ install_dbeaver() {
     run "curl -fsSL -o '$dbeaver_deb' https://dbeaver.io/files/dbeaver-ce_latest_amd64.deb"
     run "sudo dpkg -i '$dbeaver_deb' || true"
     run "sudo apt -f install -y"
-    rm -f "$dbeaver_deb"
+    run "rm -f '$dbeaver_deb'"
   fi
   
   log_success "DBeaver installed!"
@@ -421,18 +629,33 @@ install_dbeaver() {
 
 
 module_run() {
-  log_info "Installing base development tools..."
-  install_mise
-  install_mise_tools
+  log_info "Installing base development packages..."
   install_dev_packages
   install_containers
-
+  
   echo ""
-  log_info "Installing additional development tools..."  # CLI tools
-
+  log_info "Installing language managers and runtimes..."
+  
+  # Language managers and runtimes
+  install_sdkman || log_warn "SDKMAN! installation failed"
+  install_sdkman_jdks || log_warn "Java SDKs installation failed"
+  install_java_tools || log_warn "Java tools installation failed"
+  install_nodejs || log_warn "Node.js installation failed"
+  install_pyenv || log_warn "pyenv installation failed"
+  install_python || log_warn "Python installation failed"
+  install_golang || log_warn "Go installation failed"
+  install_rust || log_warn "Rust installation failed"
+  
+  echo ""
+  log_info "Installing cloud and container tools..."
+  
+  # CLI tools
   install_kubectl || log_warn "kubectl installation failed"
   install_minikube || log_warn "Minikube installation failed"
   install_awscli || log_warn "AWS CLI installation failed"
+  
+  echo ""
+  log_info "Installing IDEs and GUI tools..."
   
   # IDEs and GUI tools
   install_vscode || log_warn "VS Code installation failed"
@@ -444,7 +667,11 @@ module_run() {
   log_success "Development tools installation completed!"
   echo ""
   log_info "Installed tools:"
-  log_info "  • mise (version manager)"
+  log_info "  • SDKMAN! (Java, Maven, Gradle)"
+  log_info "  • Node.js & npm"
+  log_info "  • pyenv & Python"
+  log_info "  • Go"
+  log_info "  • Rust"
   log_info "  • Docker & Podman"
   log_info "  • kubectl & Minikube"
   log_info "  • AWS CLI"
@@ -454,7 +681,15 @@ module_run() {
   log_info "  • Draw.io (in app menu)"
   log_info "  • DBeaver (in app menu)"
   echo ""
-  log_info "Some tools may require logout/login to work properly"
+  log_info "IMPORTANT: Restart your terminal or run 'source ~/.bashrc'"
+  log_info "Then check installed versions:"
+  log_info "  • Java: java -version"
+  log_info "  • Maven: mvn -version"
+  log_info "  • Gradle: gradle -version"
+  log_info "  • Node.js: node --version"
+  log_info "  • Python: python --version"
+  log_info "  • Go: go version"
+  log_info "  • Rust: rustc --version"
 }
 
 module_run

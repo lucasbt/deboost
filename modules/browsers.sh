@@ -93,25 +93,25 @@ install_brave() {
   log_success "Brave installed!"
 }
 
-install_vivaldi() {
-  log_info "Installing Vivaldi Browser..."
+install_opera() {
+  log_info "Installing Opera Browser..."
   
   if ! check_internet; then
-    log_warn "No connection. Skipping Vivaldi."
+    log_warn "No connection. Skipping Opera."
     return 1
   fi
   
-  log_info "→ Adding Vivaldi GPG key..."
-  run "wget -qO- https://repo.vivaldi.com/archive/linux_signing_key.pub | gpg --dearmor | sudo dd of=/usr/share/keyrings/vivaldi-browser.gpg"
+  log_info "→ Adding Opera GPG key..."
+  run "wget -qO- https://deb.opera.com/archive.key | gpg --dearmor | sudo dd of=/usr/share/keyrings/opera-browser.gpg"
   
   log_info "→ Adding repository..."
-  run "echo 'deb [signed-by=/usr/share/keyrings/vivaldi-browser.gpg arch=amd64] https://repo.vivaldi.com/archive/deb/ stable main' | sudo dd of=/etc/apt/sources.list.d/vivaldi-archive.list"
+  run "echo 'deb [signed-by=/usr/share/keyrings/opera-browser.gpg arch=amd64] https://deb.opera.com/opera-stable/ stable non-free' | sudo dd of=/etc/apt/sources.list.d/opera.list"
   
-  log_info "Update with Vivaldi repository..."
+  log_info "Update with Opera repository..."
   run "sudo apt -qq update"
-  apt_install vivaldi-stable
+  apt_install opera-stable
   
-  log_success "Vivaldi installed!"
+  log_success "Opera installed!"
 }
 
 module_run() {
@@ -134,8 +134,8 @@ module_run() {
     install_list+=("brave")
   fi
   
-  if ask_yes_no "Install Vivaldi?" "n"; then
-    install_list+=("vivaldi")
+  if ask_yes_no "Install Opera?" "n"; then
+    install_list+=("opera")
   fi
   
   if [ ${#install_list[@]} -eq 0 ]; then
@@ -152,7 +152,7 @@ module_run() {
       firefox) install_firefox ;;
       chrome) install_chrome ;;
       brave) install_brave ;;
-      vivaldi) install_vivaldi ;;
+      opera) install_opera;;
     esac
   done
   
