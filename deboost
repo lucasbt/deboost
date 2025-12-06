@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deboost - Modular post-install for Debian 13 GNOME/Wayland
 # Project: https://github.com/lucasbt/deboost
-# License: MIT License - https://raw.githubusercontent.com/lucasbt/deboost/refs/heads/main/LICENSE
+# License: GPL-3.0
 # Maintainer: Lucas Bittencourt (lucasbt@gmail.com)
 
 set -euo pipefail
@@ -26,12 +26,66 @@ DEBOOST_INSTALLED_FILE="${DEBOOST_HOME}/.installed"
 DRYRUN=false
 VERBOSE=false
 
-# Import utils early
-source "${DEBOOST_HOME}/lib/utils.sh"
-
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
+
+log() {
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
+}
+
+log_info() {
+  echo -e "\033[0;34m[INFO]\033[0m $*"
+}
+
+log_success() {
+  echo -e "\033[0;32m[OK]\033[0m $*"
+}
+
+log_warn() {
+  echo -e "\033[0;33m[WARN]\033[0m $*" >&2
+}
+
+log_error() {
+  echo -e "\033[0;31m[ERROR]\033[0m $*" >&2
+}
+
+log_debug() {
+  if [ "$VERBOSE" = true ]; then
+    echo -e "\033[0;90m[DEBUG]\033[0m $*"
+  fi
+}
+
+run() {
+  if [ "$DRYRUN" = true ]; then
+    log_info "[DRYRUN] $*"
+    return 0
+  else
+    log_debug "[RUN] $*"
+    eval "$@"
+  fi
+}
+
+require_command() {
+  local cmd="$1"
+  if ! command -v "$cmd" &>/dev/null; then
+    log_error "Command '$cmd' not found. Please install it first."
+    exit 1
+  fi
+}
+
+check_internet() {
+  if ! ping -c 1 -W 2 8.8.8.8 &>/dev/null; then
+    log_warn "No internet connection. Some operations may fail."
+    return 1
+  fi
+  return 0
+}
+
+is_wayland() {
+  [ "${XDG_SESSION_TYPE:-}" = "wayland" ]
+}
+
 warn_if_not_wayland() {
   if ! is_wayland; then
     log_warn "This configuration is optimized for Wayland."
@@ -178,6 +232,35 @@ DEBOOST_MODULES=""
 
 # Modules to ignore (space-separated)
 DEBOOST_MODULES_IGNORE=""
+
+# ============================================================================
+# SYSTEM TUNING
+# ============================================================================
+
+# Swappiness (0-100, recommended: 10 for desktop, 60 for server)
+SWAPPINESS=10
+
+# VFS cache pressure (default: 100, lower = keep cache longer)
+VFS_CACHE_PRESSURE=50
+
+# Dirty page ratios (percentage of RAM)
+DIRTY_RATIO=10
+DIRTY_BACKGROUND_RATIO=5
+
+# I/O Scheduler (mq-deadline, kyber, bfq, none)
+IO_SCHEDULER=mq-deadline
+
+# CPU Governor (performance, powersave, ondemand, conservative)
+CPU_GOVERNOR=performance
+
+# Journal max size
+JOURNAL_MAX_SIZE=100M
+
+# GRUB timeout in seconds
+GRUB_TIMEOUT=2
+
+# Install preload (application preloader)
+INSTALL_PRELOAD=true
 
 ENV_EOF
 
